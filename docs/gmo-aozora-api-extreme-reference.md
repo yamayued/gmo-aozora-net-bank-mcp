@@ -908,3 +908,504 @@ GMOあおぞらAPIは、単純な残高照会APIではなく、
 
 まで含んだ、かなり実務寄りの銀行APIです。  
 MCP化するなら「読み取り系から段階導入」「書き込み系は二段階確認」「環境差異を設定化」が成功パターンです。
+
+## 17. 正規化したAPIインベントリ
+
+この章は、実装時に「結局どのHTTPパスに、何を投げて、何が返るか」を一覧で引けるようにしたものです。
+
+## 17.1 Auth API
+
+| メソッド | パス | 主な入力 | 主な出力 | 備考 |
+| --- | --- | --- | --- | --- |
+| `GET` | `/authorization` | `client_id`, `redirect_uri`, `response_type=code`, `scope`, `state`, `nonce?` | 認可遷移 | ユーザーを認可画面へ送る |
+| `POST` | `/token` | `TokenRequest` | `TokenResponse` | 新規発行とリフレッシュ両対応 |
+
+## 17.2 口座API
+
+| API種別 | メソッド | パス | 主な入力 | 主な出力 |
+| --- | --- | --- | --- | --- |
+| Corporate/Personal | `GET` | `/accounts` | `x-access-token` | `AccountsResponse` |
+| Corporate/Personal | `GET` | `/accounts/balances` | `x-access-token`, `accountId?` | `BalancesResponse` |
+| Corporate/Personal | `GET` | `/accounts/transactions` | `accountId`, `x-access-token`, `dateFrom?`, `dateTo?`, `nextItemKey?` | `TransactionsResponse` |
+| Corporate/Personal | `GET` | `/accounts/deposit-transactions` | `accountId`, `x-access-token`, `dateFrom?`, `dateTo?`, `nextItemKey?` | `DepositTransactionsResponse` |
+| Corporate/Personal | `GET` | `/accounts/visa-transactions` | `accountId`, `x-access-token`, `dateFrom?`, `dateTo?`, `nextItemKey?` | `VisaTransactionsResponse` |
+
+## 17.3 振込API
+
+| API種別 | メソッド | パス | 主な入力 | 主な出力 |
+| --- | --- | --- | --- | --- |
+| Transfer | `POST` | `/transfer/transferfee` | `TransferRequest`, `x-access-token` | `TransferFeeResponse` |
+| Transfer | `POST` | `/transfer/request` | `TransferRequest`, `x-access-token` | `TransferRequestResponse` |
+| Transfer | `GET` | `/transfer/status` | `accountId`, `queryKeyClass`, `x-access-token`, `applyNo?`, `dateFrom?`, `dateTo?`, `nextItemKey?`, `requestTransferStatuses?`, `requestTransferClass?`, `requestTransferTerm?` | `TransferStatusResponse` |
+| Transfer Common | `POST` | `/transfer/cancel` | `TransferCancelRequest`, `x-access-token` | `TransferCancelResponse` |
+| Transfer Common | `GET` | `/transfer/request-result` | `accountId`, `applyNo`, `x-access-token` | `TransferRequestResultResponse` |
+
+## 17.4 総合振込API
+
+| メソッド | パス | 主な入力 | 主な出力 |
+| --- | --- | --- | --- |
+| `POST` | `/bulktransfer/transferfee` | `BulkTransferRequest`, `x-access-token` | `TransferFeeResponse` |
+| `POST` | `/bulktransfer/request` | `BulkTransferRequest`, `x-access-token` | `BulkTransferRequestResponse` |
+| `GET` | `/bulktransfer/status` | `accountId`, `queryKeyClass`, `x-access-token`, `detailInfoNecessity?`, `bulktransferItemKey?`, `applyNo?`, `dateFrom?`, `dateTo?`, `nextItemKey?`, `requestTransferStatuses?`, `requestTransferClass?`, `requestTransferTerm?` | `BulkTransferStatusResponse` |
+
+## 17.5 振込入金口座API
+
+| メソッド | パス | 主な入力 | 主な出力 |
+| --- | --- | --- | --- |
+| `GET` | `/va/deposit-transactions` | `x-access-token`, `vaContractAuthKey?`, `raId?`, `vaId?`, `dateFrom?`, `dateTo?`, `sortOrderCode?`, `nextItemKey?` | `VaDepositTransactionsResponse` |
+| `POST` | `/va/issue` | `VaIssueRequest`, `x-access-token` | `VaIssueResponse` |
+| `POST` | `/va/status-change` | `VaStatusChangeRequest`, `x-access-token` | `VaStatusChangeResponse` |
+| `POST` | `/va/list` | `VaListRequest`, `x-access-token` | `VaListResponse` |
+| `POST` | `/va/close-request` | `VaCloseRequest`, `x-access-token` | `VaCloseRequestResponse` |
+
+## 17.6 Webhook API
+
+| メソッド | パス | 主な入力 | 主な出力 | 備考 |
+| --- | --- | --- | --- | --- |
+| `POST` | `/subscribe` | `authorization`, `SubscribeRequestBody` | 空レスポンス | 配信開始/停止 |
+| `GET` | `/unsentlist/va-deposit-transaction` | `authorization` | `VaDepositTransactionUnsentResponse` | 未送信明細を回収 |
+
+## 18. 実装用 JSON スケルトン
+
+以下は公開安全なダミー値で作った実装用ひな型です。フィールド名は公式SDKのモデル名に寄せています。
+
+## 18.1 TokenRequest: 新規発行
+
+```json
+{
+  "grantType": "authorization_code",
+  "code": "AUTH_CODE_EXAMPLE",
+  "redirectUri": "https://example.com/oauth/callback",
+  "clientId": "CLIENT_ID_EXAMPLE",
+  "clientSecret": "CLIENT_SECRET_EXAMPLE"
+}
+```
+
+## 18.2 TokenRequest: リフレッシュ
+
+```json
+{
+  "grantType": "refresh_token",
+  "refreshToken": "REFRESH_TOKEN_EXAMPLE",
+  "clientId": "CLIENT_ID_EXAMPLE",
+  "clientSecret": "CLIENT_SECRET_EXAMPLE"
+}
+```
+
+## 18.3 TransferRequest: 単票振込
+
+```json
+{
+  "accountId": "123456789012",
+  "remitterName": "ｻﾝﾌﾟﾙｶｲｼｬ",
+  "transferDesignatedDate": "2026-03-20",
+  "transferDateHolidayCode": "1",
+  "transfers": [
+    {
+      "transferAmount": "50000",
+      "beneficiaryBankCode": "0001",
+      "beneficiaryBranchCode": "001",
+      "accountTypeCode": "1",
+      "accountNumber": "0001234",
+      "beneficiaryName": "ﾃｽﾄ ｳｹﾄﾘﾆﾝ",
+      "ediInfo": "INV-20260320-001"
+    }
+  ]
+}
+```
+
+## 18.4 BulkTransferRequest: 総合振込
+
+```json
+{
+  "accountId": "123456789012",
+  "remitterName": "ｻﾝﾌﾟﾙｶｲｼｬ",
+  "transferDesignatedDate": "2026-03-25",
+  "transferDateHolidayCode": "1",
+  "transferDataName": "PAYROLL_2026_03",
+  "totalCount": "2",
+  "totalAmount": "350000",
+  "bulkTransfers": [
+    {
+      "itemId": "1",
+      "beneficiaryBankCode": "0001",
+      "beneficiaryBranchCode": "001",
+      "accountTypeCode": "1",
+      "accountNumber": "0001111",
+      "beneficiaryName": "ﾀﾅｶ ﾀﾛｳ",
+      "transferAmount": "150000",
+      "ediInfo": "SALARY_A"
+    },
+    {
+      "itemId": "2",
+      "beneficiaryBankCode": "0005",
+      "beneficiaryBranchCode": "123",
+      "accountTypeCode": "1",
+      "accountNumber": "0002222",
+      "beneficiaryName": "ｻﾄｳ ﾊﾅｺ",
+      "transferAmount": "200000",
+      "ediInfo": "SALARY_B"
+    }
+  ]
+}
+```
+
+## 18.5 TransferCancelRequest
+
+```json
+{
+  "accountId": "123456789012",
+  "cancelTargetKeyClass": "2",
+  "applyNo": "2026031300000001"
+}
+```
+
+## 18.6 VaIssueRequest
+
+```json
+{
+  "vaTypeCode": "1",
+  "issueRequestCount": "10",
+  "raId": "123456789012",
+  "vaHolderNameKana": "ﾃｽﾄﾆｭｳｷﾝ",
+  "vaHolderNamePos": "1"
+}
+```
+
+## 18.7 VaListRequest
+
+```json
+{
+  "vaTypeCode": "1",
+  "depositAmountExistCode": "2",
+  "vaIssueDateFrom": "2026-03-01",
+  "vaIssueDateTo": "2026-03-31",
+  "sortItemCode": "3",
+  "sortOrderCode": "1"
+}
+```
+
+## 18.8 SubscribeRequestBody
+
+```json
+{
+  "subscribeStatus": "1",
+  "eventTypes": [
+    {
+      "eventType": "va-deposit-transaction"
+    }
+  ]
+}
+```
+
+## 18.9 代表レスポンス: TransferRequestResponse
+
+```json
+{
+  "accountId": "123456789012",
+  "resultCode": "1",
+  "applyNo": "2026031300000001",
+  "applyEndDatetime": "2026-03-13T14:30:00+09:00"
+}
+```
+
+## 18.10 代表レスポンス: TransferRequestResultResponse
+
+```json
+{
+  "accountId": "123456789012",
+  "resultCode": "2",
+  "applyNo": "2026031300000001"
+}
+```
+
+## 18.11 代表レスポンス: VaListResponse
+
+```json
+{
+  "baseDate": "2026-03-13",
+  "baseTime": "14:31:00+09:00",
+  "hasNext": false,
+  "count": "2",
+  "vAccounts": []
+}
+```
+
+## 19. 重要ID・状態コード早見表
+
+## 19.1 重要ID
+
+| 項目 | 意味 | 実装上の使い方 |
+| --- | --- | --- |
+| `accountId` | 口座を識別するID | 残高照会、振込元指定、明細照会の主キー |
+| `applyNo` | 受付番号、振込申請番号 | 振込/総合振込/取消の追跡キー |
+| `raId` | 入金先口座ID | 仮想口座の紐付け先 |
+| `vaId` | 振込入金口座ID | 仮想口座ごとの参照キー |
+| `nextItemKey` | 次ページキー | 明細/一覧系ページング |
+| `bulktransferItemKey` | 総合振込明細の開始位置 | 総合振込明細分割取得 |
+| `messageId` | WebhookメッセージID | 重複排除キー |
+
+## 19.2 resultCode
+
+| 値 | 意味 | どこで出るか |
+| --- | --- | --- |
+| `1` | 完了 | 振込依頼、総合振込依頼、取消、結果照会 |
+| `2` | 未完了 | 同上 |
+| `8` | 期限切 | `TransferRequestResultResponse` |
+
+`resultCode=2` は失敗とは限らず、後続の結果照会や状況照会が必要な状態として扱うのが安全です。
+
+## 19.3 RequestTransferStatus
+
+| 値 | 意味 |
+| --- | --- |
+| `2` | 申請中 |
+| `3` | 差戻 |
+| `4` | 取下げ |
+| `5` | 期限切れ |
+| `8` | 承認取消 / 予約取消 |
+| `11` | 予約中 |
+| `12` | 手続中 |
+| `13` | リトライ中 |
+| `20` | 手続済 |
+| `22` | 資金返却 |
+| `24` | 組戻手続中 |
+| `25` | 組戻済 |
+| `26` | 組戻不成立 |
+| `30` | 不能・組戻あり |
+| `40` | 手続不成立 |
+
+注意:
+
+- `22`, `24`, `25`, `26` は振込状況照会でのみ指定可能
+- `30` は総合振込状況照会でのみ指定可能
+
+## 19.4 VaStatusCode
+
+| 値 | 意味 |
+| --- | --- |
+| `1` | 利用可能 |
+| `2` | 停止中 |
+| `3` | 削除済 |
+
+## 20. 実装シーケンス図
+
+## 20.1 認可コードフロー
+
+```mermaid
+sequenceDiagram
+    participant User as User
+    participant App as Client App
+    participant Auth as GMO Auth API
+    participant API as GMO Business API
+
+    App->>Auth: GET /authorization
+    User->>Auth: login + consent
+    Auth-->>App: redirect_uri?code=...&state=...
+    App->>Auth: POST /token (authorization_code)
+    Auth-->>App: accessToken, refreshToken, idToken
+    App->>API: request with x-access-token
+    API-->>App: business response
+```
+
+## 20.2 安全な振込実行フロー
+
+```mermaid
+sequenceDiagram
+    participant App as Client App or MCP
+    participant API as GMO Transfer API
+
+    App->>API: POST /transfer/transferfee
+    API-->>App: fee quote
+    App->>API: POST /transfer/request
+    API-->>App: applyNo, resultCode
+    alt resultCode=2
+        loop until settled
+            App->>API: GET /transfer/request-result
+            API-->>App: resultCode
+        end
+    end
+    App->>API: GET /transfer/status
+    API-->>App: final transfer details
+```
+
+## 20.3 Webhook未送信回収フロー
+
+```mermaid
+sequenceDiagram
+    participant Worker as Recovery Worker
+    participant Webhook as GMO Webhook API
+
+    loop until 404
+        Worker->>Webhook: GET /unsentlist/va-deposit-transaction
+        alt 200 OK
+            Webhook-->>Worker: messages[0..500]
+            Worker->>Worker: dedupe by messageId and persist
+        else 404 Not Found
+            Webhook-->>Worker: no unsent messages
+        end
+    end
+```
+
+## 21. データモデルで見た返却のクセ
+
+## 21.1 AccountsResponse
+
+重要項目:
+
+- `baseDate`
+- `baseTime`
+- `accounts`
+- `spAccounts`
+
+`spAccounts` は「つかいわけ口座」が無い場合は項目自体が省略される可能性があります。  
+つまり、`null` と `[]` と「フィールド無し」を区別しないデコーダの方が安全です。
+
+## 21.2 TransactionsResponse
+
+重要項目:
+
+- `hasNext`
+- `nextItemKey`
+- `count`
+- `transactions`
+
+この組み合わせから、「件数0でも `hasNext=false` なら正常終了」と扱えます。
+
+## 21.3 DepositTransactionsResponse
+
+重要項目:
+
+- `paymentArrivals`
+- `hasNext`
+- `nextItemKey`
+
+リクエストに `dateFrom/dateTo` を入れない場合、レスポンス側では当日日付が入る点が特徴です。
+
+## 21.4 VaIssueResponse
+
+重要項目:
+
+- `vaTypeCode`
+- `vaTypeName`
+- `expireDateTime`
+- `vaHolderNameKana`
+- `vaList`
+
+`vaTypeCode=2` の継続型では `expireDateTime` が `NULL` になり得ます。
+
+## 21.5 VaListResponse
+
+重要項目:
+
+- `hasNext`
+- `nextItemKey`
+- `count`
+- `vAccounts`
+
+一覧取得時のページングキーはここから次回に引き継ぎます。
+
+## 21.6 Webhookメッセージ
+
+`VaDepositTransactionMessage` の重要項目:
+
+- `messageId`
+- `timestamp`
+- `account`
+- `vaTransaction`
+
+運用では `messageId` による重複排除が基本です。  
+Webhook配信と未送信回収APIの両方を使うなら、永続化キーは `messageId` 一択でよいです。
+
+## 22. エラー正規化戦略
+
+GMOあおぞらAPIは、APIごとにエラーの意味が少しずつ違います。アプリ側にエラー正規化レイヤーを用意すると保守性が上がります。
+
+推奨カテゴリ:
+
+| アプリ内カテゴリ | 典型例 |
+| --- | --- |
+| `auth_invalid_request` | `invalid_request`, `invalid_client`, `invalid_grant` |
+| `permission_denied` | スコープ不足、契約不足、利用申込不足を疑うケース |
+| `validation_error` | 日付範囲不正、キー区分とパラメータ不整合、文字種違反 |
+| `not_found_but_ok` | Webhook未送信一覧の `404` |
+| `async_pending` | `resultCode=2` |
+| `async_expired` | `resultCode=8` |
+| `temporary_failure` | `server_error`, 5xx, 一時的通信失敗 |
+
+特に吸収したい差分:
+
+- `400` が「書式不正」だけでなく「組み合わせ不正」も表す
+- `404` が業務APIでは異常寄りでも、Webhook未送信取得では正常終了
+- `resultCode=2` は HTTP エラーではなく、業務処理継続中
+
+## 23. STGでやるべき疎通試験
+
+本番前に最低限やるべきことを、実装順に並べると次のとおりです。
+
+1. `GET /authorization` のURL生成と `state` 往復確認
+2. `POST /token` の新規発行
+3. リフレッシュトークン再発行
+4. `GET /accounts`
+5. `GET /accounts/balances`
+6. `GET /accounts/transactions`
+7. `POST /transfer/transferfee`
+8. `POST /transfer/request`
+9. `GET /transfer/request-result`
+10. `GET /transfer/status`
+11. `POST /va/issue`
+12. `POST /va/list`
+13. `GET /va/deposit-transactions`
+14. `POST /subscribe`
+15. `GET /unsentlist/va-deposit-transaction`
+
+## 23.1 STGで確認すべき観点
+
+- `redirect_uri` 完全一致でしか通らないか
+- `offline_access` の有無で `refreshToken` が変わるか
+- 空明細時の応答形
+- `hasNext` と `nextItemKey` の整合性
+- 非営業日指定の前営業日/翌営業日/エラー動作
+- `resultCode=2` の継続時間
+- Webhook停止中の未送信回収で `404` 終了になるか
+
+## 24. MCP設計をさらに詰めるなら
+
+すでに基本ツール案は出しましたが、実運用向けにはさらに次の分割が有効です。
+
+## 24.1 読み取り専用ツール
+
+- `list_accounts`
+- `get_balances`
+- `get_transactions`
+- `get_deposit_transactions`
+- `get_virtual_account_deposits`
+- `list_virtual_accounts`
+- `get_transfer_status`
+- `get_bulk_transfer_status`
+- `get_transfer_request_result`
+
+これらは比較的安全で、監視や要約にも向きます。
+
+## 24.2 書き込み系ツール
+
+- `create_transfer_request`
+- `cancel_transfer`
+- `create_bulk_transfer_request`
+- `issue_virtual_accounts`
+- `change_virtual_account_status`
+- `close_virtual_account_contract`
+- `set_webhook_subscription`
+
+これらは「確認ステップ付き」にすべきです。
+
+## 24.3 二段階確認が必要なツール
+
+| 事前確認ツール | 実行ツール |
+| --- | --- |
+| `quote_transfer_fee` | `create_transfer_request` |
+| `quote_bulk_transfer_fee` | `create_bulk_transfer_request` |
+| `preview_virtual_account_issue` | `issue_virtual_accounts` |
+| `preview_webhook_subscription_change` | `set_webhook_subscription` |
+
+MCPでは、LLMが推測で書き込みを行わないよう、プレビューと実行を分けるのがかなり重要です。
