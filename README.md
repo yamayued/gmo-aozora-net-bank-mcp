@@ -16,3 +16,4 @@ See [AGENTS.md](./AGENTS.md) for operating rules.
 ## Docs
 
 - [GMO Aozora API Extreme Reference](./docs/gmo-aozora-api-extreme-reference.md)
+- [AI Security And Operations Guide](./docs/ai-security-and-operations.md)
