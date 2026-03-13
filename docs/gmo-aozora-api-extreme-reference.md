@@ -2026,3 +2026,301 @@ Webhook用 `Account` モデルは、通常の口座一覧APIの `Account` とは
 - 仮想口座は「発行」「一覧」「状態変更」「入金明細」を別責務に分ける
 - Webhookは通知受信だけでなく未送信回収まで含めて完成
 - 公開リポジトリやログには実口座情報・実クレデンシャルを絶対に出さない
+
+## 35. 金額・件数・日時の正規化規約
+
+この章は API 仕様を実装内部型へ変換するための規約です。  
+これまでの章では個別API説明をしましたが、ここでは横断ルールとしてまとめます。
+
+## 35.1 金額は文字列で返る前提で扱う
+
+公開モデル上、金額系はかなりの割合で `String` です。
+
+例:
+
+- `balance`
+- `withdrawableAmount`
+- `transferAmount`
+- `totalFee`
+- `totalDebitAmount`
+- `depositAmount`
+- `latestDepositAmount`
+- `localCurrencyAmount`
+- `yenEquivalent`
+
+したがって、内部では次のいずれかに寄せるのが安全です。
+
+1. 文字列のまま保持して表示専用にする
+2. 独自の Decimal 型へ変換する
+3. 円貨は整数、外貨は高精度 Decimal へ分ける
+
+`Number` へ安易に落とすと、外貨・換算系で精度事故が起こりやすいです。
+
+## 35.2 円貨と外貨で小数ルールが違う
+
+公式モデルから読み取れる違い:
+
+- 円貨系は整数前提の項目が多い
+- 外貨系は小数部最大3桁の残高やレートがある
+- Visa現地通貨系は小数部最大6桁がある
+
+例:
+
+| 項目 | 小数 |
+| --- | --- |
+| `transferAmount` | 整数 |
+| `fcyTotalBalance` | 最大3桁 |
+| `ttb` | 最大3桁 |
+| `localCurrencyAmount` | 最大6桁 |
+| `conversionRate` | 最大6桁 |
+| `atmCommission` | 最大6桁 |
+
+つまり、共通の `money` 型ひとつで片付けるより、
+
+- `JPYAmount`
+- `FXAmount`
+- `Rate`
+
+のように分ける方が安全です。
+
+## 35.3 負値を取りうる項目
+
+少なくとも次はマイナスを取りうるとモデル説明にあります。
+
+- `balance`
+- `withdrawableAmount`
+- `previousDayBalance`
+- `previousMonthBalance`
+- `fcyTotalBalance`
+- `ttb`
+- `yenEquivalent`
+- `amount` の一部
+
+設計上は「残高系は符号付き」「依頼金額系は非負」のルールで分けると扱いやすいです。
+
+## 35.4 件数系は文字列で来る
+
+`count`, `totalCount`, `latestDepositCount` なども文字列で返るものがあります。  
+これらは UI 表示ではそのままでもよいですが、比較・集計用途では数値化して持つ方が楽です。
+
+## 35.5 日時はタイムゾーン付き文字列が混在
+
+代表パターン:
+
+- `YYYY-MM-DD`
+- `HH:MM:SS+09:00`
+- `YYYY-MM-DDTHH:MM:SS+09:00`
+- ISO8601 offset 付き
+
+実装では:
+
+- 日付だけの型
+- 時刻だけの型
+- タイムゾーン付き日時型
+
+を分離した方がよいです。
+
+## 36. null・省略・空配列の違い
+
+この API は「該当なし」の表現がかなり多様です。  
+ここを吸収できるかでデコーダの頑健性が変わります。
+
+## 36.1 3種類ある
+
+| パターン | 意味 |
+| --- | --- |
+| `null` | 項目は存在するが値なし |
+| フィールド自体が省略 | その文脈では返さない |
+| 空配列 `[]` | 配列としては正しいが要素なし |
+
+## 36.2 典型例
+
+| モデル | 典型挙動 |
+| --- | --- |
+| `AccountsResponse.spAccounts` | 情報が無い場合は項目自体が無いことがある |
+| `BalancesResponse.balances` | 空リストになることがある |
+| `TransactionsResponse.transactions` | 空リストになり得る |
+| `TransferAccepts` | 該当無しで空リスト |
+| `UnableDetailInfos` | 該当無しで項目自体が無い場合あり |
+| `nextItemKey` | `hasNext=false` なら `NULL` または未設定になり得る |
+
+## 36.3 デコーダ実装の原則
+
+- Optional フィールドは「欠落」と `null` の両方を受ける
+- 配列は `undefined | null | [] | [items]` を吸収する
+- 上流の素の JSON を捨てず、正規化後の値とセットで保持すると保守しやすい
+
+## 37. 手数料と不能明細をどう読むか
+
+これまで振込APIの流れは整理しましたが、「いくら掛かるか」「どの明細が失敗したか」は別の読み方が必要です。
+
+## 37.1 `TransferFeeResponse`
+
+主な項目:
+
+- `accountId`
+- `baseDate`
+- `baseTime`
+- `totalFee`
+- `transferFeeDetails`
+
+これは「見積の合計」と「明細ごとの見積」を同時に返します。
+
+## 37.2 `TransferFeeDetail`
+
+主な項目:
+
+- `itemId`
+- `transferFee`
+
+実装ポイント:
+
+- 複数件振込時は `itemId` ごとの個別手数料をそのまま UI に出せる
+- 再見積時の差分比較にも使える
+
+## 37.3 `UnableDetailInfo`
+
+不能明細モデルとして次を持ちます。
+
+- `transferDetailStatus`
+- `refundStatus`
+- `isRepayment`
+- `repaymentDate`
+
+### 37.3.1 `transferDetailStatus`
+
+| 値 | 意味 |
+| --- | --- |
+| `1` | 手続済 |
+| `2` | 手続不成立 |
+
+### 37.3.2 `refundStatus`
+
+| 値 | 意味 |
+| --- | --- |
+| `1` | 組戻手続中 |
+| `2` | 組戻済 |
+| `3` | 組戻不成立 |
+
+### 37.3.3 実務での読み方
+
+- `transferDetailStatus=2` なら明細失敗
+- `isRepayment=true` なら資金返却が発生している
+- 総合振込では `repaymentDate` が意味を持つ
+
+つまり、振込失敗を単に「エラー」で終わらせず、
+
+- 失敗したか
+- 資金が返ってきたか
+- 組戻がどこまで進んだか
+
+を別々に追えるようにすると運用が強くなります。
+
+## 38. つかいわけ口座と外貨を別ドメインとして扱う
+
+通常口座だけで設計すると、`spAccounts` や外貨情報で後から無理が出ます。
+
+## 38.1 `SpAccountBalance`
+
+主な項目:
+
+- `odBalance`
+- `tdTotalBalance`
+- `fodTotalBalanceYenEquivalent`
+- `spAccountFcyBalances`
+
+これは「つかいわけ口座を起点に、円普通、円定期、外貨評価額をまとめて見る」ためのモデルです。
+
+## 38.2 `SpAccountFcyBalance`
+
+主な項目:
+
+- `currencyCode`
+- `currencyName`
+- `fcyTotalBalance`
+- `ttb`
+- `baseRateDate`
+- `baseRateTime`
+- `yenEquivalent`
+
+実装ポイント:
+
+- 外貨残高一覧 UI を作るなら、このモデルをそのまま行データとして使える
+- `baseRateDate/baseRateTime` があるので、換算の基準時刻を明示できる
+
+## 38.3 口座タイプコードで画面やツールを切り替える
+
+`Account.accountTypeCode` には少なくとも次があります。
+
+| 値 | 意味 |
+| --- | --- |
+| `01` | 普通預金（有利息） |
+| `02` | 普通預金（決済用） |
+| `11` | 円定期預金 |
+| `51` | 外貨普通預金 |
+| `81` | 証券コネクト口座 |
+
+設計上は:
+
+- `01`, `02`: 振込や明細の中心
+- `11`: 定期系残高
+- `51`: 外貨系の特殊処理
+- `81`: 連携口座として別扱い
+
+のように責務を分ける方が自然です。
+
+## 39. API選択レシピ
+
+最後に、「目的から逆引き」できるように用途別に整理します。
+
+## 39.1 口座を見たい
+
+- 一覧だけ: `GET /accounts`
+- 残高を見たい: `GET /accounts/balances`
+- つかいわけ口座も意識する: `AccountsResponse.spAccounts`, `BalancesResponse.spAccountBalances` も見る
+
+## 39.2 入出金を追いたい
+
+- 一般の入出金: `GET /accounts/transactions`
+- 振込入金だけ: `GET /accounts/deposit-transactions`
+- 仮想口座の入金だけ: `GET /va/deposit-transactions`
+- カード利用だけ: `GET /accounts/visa-transactions`
+
+## 39.3 振込を実行したい
+
+- まず見積: `POST /transfer/transferfee`
+- 実行: `POST /transfer/request`
+- 依頼の非同期結果確認: `GET /transfer/request-result`
+- 明細や履歴の最終確認: `GET /transfer/status`
+
+## 39.4 総合振込を扱いたい
+
+- 見積: `POST /bulktransfer/transferfee`
+- 実行: `POST /bulktransfer/request`
+- 一覧・履歴: `GET /bulktransfer/status`
+- 明細掘り下げ: `detailInfoNecessity=true`
+
+## 39.5 仮想口座を運用したい
+
+- 発行: `POST /va/issue`
+- 一覧: `POST /va/list`
+- 状態変更: `POST /va/status-change`
+- 入金照会: `GET /va/deposit-transactions`
+- 契約解約申込: `POST /va/close-request`
+
+## 39.6 通知運用を安定化したい
+
+- 配信開始/停止: `POST /subscribe`
+- 配信漏れ回収: `GET /unsentlist/va-deposit-transaction`
+
+## 40. この文書をこれ以上伸ばすなら
+
+重複なしでさらに伸ばすなら、次の方向が残っています。
+
+- 全モデルの完全な型辞書化
+- ステータス遷移図の完全版
+- TypeScript 型定義への変換
+- MCP ツールI/Oスキーマの完全記述
+- STG検証観点を自動テストケースへ落とし込んだ章
+
+この段階では、単なる調査メモではなく「公式資料を横断した設計ベース」として十分使える密度になっています。
