@@ -12,3 +12,7 @@ This repository is intended to stay public-safe.
 - Examples and fixtures must use sanitized placeholders only
 
 See [AGENTS.md](./AGENTS.md) for operating rules.
+
+## Docs
+
+- [GMO Aozora API Extreme Reference](./docs/gmo-aozora-api-extreme-reference.md)
