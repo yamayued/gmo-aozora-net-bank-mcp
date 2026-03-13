@@ -2491,3 +2491,251 @@ MCPツールとしては次のような切り方が自然です。
 - 内部コード可読性
 
 の両立がしやすくなります。
+
+## 43. パラメータ相関マトリクス
+
+この章は「どの値を選ぶと、どのパラメータが有効になるか」を一覧にしたものです。  
+既存章で個別に説明した内容を再説明するのではなく、実装で分岐条件として使える形に圧縮しています。
+
+## 43.1 `transfer/status` の相関
+
+基点となるのは `queryKeyClass` です。
+
+| `queryKeyClass` | 意味 | 必須/有効になるもの | 無効になるもの |
+| --- | --- | --- | --- |
+| `1` | 振込申請照会対象指定 | `applyNo` | `dateFrom`, `dateTo`, `nextItemKey`, `requestTransferStatuses`, `requestTransferClass`, `requestTransferTerm` |
+| `2` | 振込一括照会対象指定 | `dateFrom?`, `dateTo?`, `nextItemKey?`, `requestTransferStatuses?`, `requestTransferClass?`, `requestTransferTerm?` | `applyNo` |
+
+実装上のルール:
+
+- `queryKeyClass=1` なら `applyNo` を必須化
+- `queryKeyClass=2` なら `applyNo` 入力欄を隠す
+
+## 43.2 `bulktransfer/status` の相関
+
+こちらも `queryKeyClass` が基点ですが、さらに `detailInfoNecessity` が入ります。
+
+| 条件 | 有効になるもの |
+| --- | --- |
+| `queryKeyClass=1` | `applyNo` |
+| `queryKeyClass=2` | `dateFrom`, `dateTo`, `nextItemKey`, `requestTransferStatuses`, `requestTransferClass`, `requestTransferTerm` |
+| `detailInfoNecessity=true` | `bulktransferItemKey` |
+
+つまり、総合振込状況照会は少なくとも 2 軸で分岐します。
+
+- 申請番号照会か、一括条件照会か
+- 明細掘り下げをするか
+
+## 43.3 `va/deposit-transactions` の相関
+
+主要な分岐は `raId` と `vaId` です。
+
+| `raId` | `vaId` | 意味 |
+| --- | --- | --- |
+| あり | なし | 入金先口座単位で照会 |
+| なし | あり | 仮想口座単位で照会 |
+| あり | あり | 仮想口座が指定入金先口座に紐付くかを含めて照会 |
+| なし | なし | 実装上は無効として弾くべき |
+
+## 43.4 `va/list` の相関
+
+`va/list` は条件が多いですが、特に重要なのは以下です。
+
+| フィルタ軸 | 使う項目 |
+| --- | --- |
+| 口座そのものを指定 | `vaIdList`, `raId` |
+| 種類 | `vaTypeCode` |
+| 状態 | `vaStatusCodeList` |
+| 入金有無 | `depositAmountExistCode` |
+| 期間 | `latestDepositDateFrom/To`, `vaIssueDateFrom/To`, `expireDateFrom/To` |
+| 並び順 | `sortItemCode`, `sortOrderCode` |
+
+## 43.5 `spaccounts-transfer` の相関
+
+`SpAccountTransferRequest` の中では `currencyCode` だけが optional で、デフォルトは `JPY` です。
+
+実装では:
+
+- 省略を許容して内部で `JPY` を補う
+- ただし API 送信前には明示的に `JPY` に正規化する
+
+のどちらかで揃えると扱いやすいです。
+
+## 44. 入力バリデーション早見表
+
+この章は、既存の各所に散らばった制約を「入力チェック観点」でまとめたものです。
+
+## 44.1 ID 系
+
+| 項目 | ルール |
+| --- | --- |
+| `accountId` | 口座識別ID。表示用番号と混同しない |
+| `applyNo` | 16桁の受付番号 |
+| `vaId` | 10桁の仮想口座ID |
+| `itemId` | 単票振込は 1〜99、総合振込は 1〜9999 |
+
+## 44.2 金額系
+
+| 項目 | ルール |
+| --- | --- |
+| `transferAmount` | 1以上、整数のみ |
+| `paymentAmount` | 1以上、数値のみ、カンマ/マイナス不可 |
+| `totalAmount` | 1以上、数値のみ、カンマ/マイナス不可 |
+
+## 44.3 日付系
+
+| 項目 | ルール |
+| --- | --- |
+| `dateFrom`, `dateTo` | `YYYY-MM-DD` |
+| `transferDesignatedDate` | `YYYY-MM-DD` |
+| `dateFrom <= dateTo` | 多くの照会APIで必須 |
+| 仮想口座入金明細 | 6ヶ月以内制約あり |
+
+## 44.4 口座番号系
+
+| 項目 | ルール |
+| --- | --- |
+| `accountNumber` | 7桁未満はゼロ埋め前提 |
+| `beneficiaryBankCode` | 半角数字 |
+| `beneficiaryBranchCode` | 半角数字 |
+
+## 44.5 文字列系
+
+| 項目 | ルール |
+| --- | --- |
+| `remitterName` | 振込許容文字 |
+| `beneficiaryName` | 振込許容文字 |
+| `ediInfo` | 半角文字系 |
+| `vaHolderNameKana` | 半角カナ英数記号、追加ルール多い |
+
+## 44.6 実装チェック関数の分離案
+
+バリデーションは最低でも次の関数群に分けると保守しやすいです。
+
+- `validateTransferRequest`
+- `validateBulkTransferRequest`
+- `validateStatusQuery`
+- `validateVirtualAccountIssueRequest`
+- `validateVirtualAccountListRequest`
+- `validateSpAccountTransferRequest`
+
+## 45. レスポンスの信頼順位
+
+この章は「同じ業務について複数APIが返す情報があるとき、何を正とみなすか」の指針です。
+
+## 45.1 振込
+
+おすすめの優先順位:
+
+1. `transfer/status`
+2. `transfer/request-result`
+3. `transfer/request`
+
+理由:
+
+- `request` は受付直後
+- `request-result` は更新依頼の後追い
+- `status` は最終的な業務状態・履歴の表現力が最も高い
+
+## 45.2 総合振込
+
+おすすめの優先順位:
+
+1. `bulktransfer/status`
+2. `bulktransfer/request`
+3. `bulktransfer/transferfee`
+
+理由:
+
+- `transferfee` は見積
+- `request` は申請時点
+- `status` は履歴と詳細を最も多く持つ
+
+## 45.3 仮想口座
+
+おすすめの優先順位:
+
+1. `va/list`
+2. `va/issue`
+
+理由:
+
+- `issue` は発行直後の応答
+- `list` は状態変更や最終入金など、運用上の現在地を返せる
+
+## 45.4 入金明細
+
+| 用途 | 優先API |
+| --- | --- |
+| 口座全体の入出金 | `/accounts/transactions` |
+| 振込入金だけ | `/accounts/deposit-transactions` |
+| 仮想口座ベースの入金 | `/va/deposit-transactions` |
+| Webhookでのリアルタイム通知 | `VaDepositTransactionMessage` |
+
+設計指針:
+
+- 即時性は Webhook
+- 正規の照会は REST API
+- 最終的な再同期は REST API
+
+## 45.5 つかいわけ口座関連
+
+| 用途 | 優先API |
+| --- | --- |
+| 一覧 | `accounts` の `spAccounts` |
+| 残高 | `balances` の `spAccountBalances` |
+| 内部振替 | `/transfer/spaccounts-transfer` |
+
+## 46. 小モデルの使いどころ
+
+この章はまだ独立して触れていなかった小さなモデルの位置づけです。
+
+## 46.1 `TransferDetailResponse`
+
+主な項目:
+
+- `beneficiaryBankNameKanji`
+- `beneficiaryBranchNameKanji`
+- `usedPoint`
+- `isFeeFreeUsed`
+- `transferFee`
+
+使いどころ:
+
+- 個別明細の最終表示
+- 漢字金融機関名の画面表示
+- 実際に無料回数やポイントを使ったかの確認
+
+注意:
+
+- `isFeeFreeUse` は「利用可否」
+- `isFeeFreeUsed` は「実際に利用したか」
+
+で意味が違います。
+
+## 46.2 `Va`
+
+`VaIssueResponse` の `vaList` に出る最小モデルです。
+
+主な項目:
+
+- `vaId`
+- `vaBranchCode`
+- `vaBranchNameKana`
+- `vaAccountNumber`
+
+位置づけ:
+
+- 発行直後に必要最小限の口座情報だけ返すためのモデル
+- 詳細状態や履歴は `VAccount` の方で見る
+
+## 46.3 `VaId`
+
+`va/list` などで指定用に使う最小モデルです。
+
+使いどころ:
+
+- 複数仮想口座IDのフィルタ指定
+- ID配列の構造化入力
+
+このような小モデルは、MCPスキーマ化するときにそのまま再利用しやすいです。
