@@ -1746,3 +1746,283 @@ curl -X POST \
 - 個人APIと法人APIの契約時実効差分
 
 したがって、この文書を実装ベースにする場合でも、契約直後の STG 接続試験と銀行側資料の突合せは必須です。
+
+## 30. 振込ライフサイクルをモデルで読む
+
+振込系は単一レスポンスだけ見ても全体像がつかみにくいので、主要モデルの関係をまとめます。
+
+## 30.1 `TransferRequestResponse` と `TransferRequestResultResponse` の違い
+
+| モデル | 役割 | 主な項目 |
+| --- | --- | --- |
+| `TransferRequestResponse` | 依頼直後の受付結果 | `accountId`, `resultCode`, `applyNo`, `applyEndDatetime?` |
+| `TransferRequestResultResponse` | 更新系依頼の後追い結果 | `accountId`, `resultCode`, `applyNo`, `applyEndDatetime?` |
+
+読み方:
+
+- `TransferRequestResponse` は「受け付けた瞬間」の結果
+- `TransferRequestResultResponse` は「その依頼がその後どうなったか」の追跡結果
+
+安全な実装フロー:
+
+1. `POST /transfer/request`
+2. `resultCode=1` でも必要なら `GET /transfer/status`
+3. `resultCode=2` なら `GET /transfer/request-result` をポーリング
+4. 最終的な明細の姿は `GET /transfer/status` で確認
+
+## 30.2 `TransferStatusResponse` の見方
+
+`TransferStatusResponse` は大きく次を含みます。
+
+- `acceptanceKeyClass`
+- `baseDate`
+- `baseTime`
+- `count`
+- `transferQueryBulkResponses`
+- `transferDetails`
+
+ここで重要なのは `transferDetails` です。これは振込1件ごとの状態を表します。
+
+## 30.3 `TransferDetail` の見方
+
+主な項目:
+
+- `transferStatus`
+- `transferStatusName`
+- `transferTypeName`
+- `isFeeFreeUse`
+- `isFeePointUse`
+- `pointName`
+- `totalFee`
+- `totalDebitAmount`
+- `transferApplies`
+- `transferAccepts`
+- `transferResponses`
+
+実務で重要なのは:
+
+- いまの状態: `transferStatus`, `transferStatusName`
+- 予定/確定コスト: `totalFee`, `totalDebitAmount`
+- 承認履歴や申請履歴: `transferApplies`
+- 銀行受付や実行応答: `transferAccepts`, `transferResponses`
+
+## 30.4 `TransferApply` と `TransferApplyDetail`
+
+`TransferApply` は `applyNo` とその申請詳細群を持ちます。  
+`TransferApplyDetail` では次が重要です。
+
+- `applyDatetime`
+- `applyStatus`
+- `applyUser`
+- `applyComment`
+- `approvalUser`
+- `approvalComment`
+
+つまり、ビジネスID管理が絡む環境では、単なる振込APIではなく「申請ワークフローAPI」として読むべきです。
+
+### 30.4.1 `applyStatus`
+
+1桁目コードとして次が定義されています。
+
+| 値 | 意味 |
+| --- | --- |
+| `0` | 未申請 |
+| `1` | 申請中 |
+| `2` | 差戻 |
+| `3` | 取下げ |
+| `4` | 期限切れ |
+| `5` | 承認済 |
+| `6` | 承認取消 |
+| `7` | 自動承認 |
+
+このため、MCPや業務UIで承認フローまで扱うなら `transferStatus` と `applyStatus` を分けて見せた方が誤解が減ります。
+
+## 30.5 `TransferInfo`
+
+`TransferInfo` は個別の振込先と結果の束です。
+
+主な項目:
+
+- `transferAmount`
+- `ediInfo`
+- `beneficiaryBankCode`
+- `beneficiaryBankName`
+- `beneficiaryBranchCode`
+- `beneficiaryBranchName`
+- `accountTypeCode`
+- `accountNumber`
+- `beneficiaryName`
+- `transferDetailResponses`
+- `unableDetailInfos`
+
+ここで重要なのは `unableDetailInfos` があることです。  
+つまり「申請自体は受理されたが、一部明細が不能」というケースをモデルとして持っています。
+
+## 30.6 総合振込の `BulkTransferDetail`
+
+`BulkTransferDetail` は総合振込版の状態モデルです。
+
+主な項目:
+
+- `transferStatus`
+- `transferStatusName`
+- `transferTypeName`
+- `remitterCode`
+- `isFeeFreeUse`
+- `isFeePointUse`
+- `feeLaterPaymentFlg`
+- `totalFee`
+- `totalDebitAmount`
+- `transferApplies`
+- `transferAccepts`
+- `bulktransferResponses`
+
+実装上の読み方:
+
+- `feeLaterPaymentFlg=true` なら手数料後払い契約の可能性を考慮
+- 総合振込では無料回数は使えないため `isFeeFreeUse` は常に `false`
+
+## 31. 一括照会レスポンスの意味
+
+## 31.1 `TransferQueryBulkResponse`
+
+このモデルは「一括照会要求そのものの条件とページ状態」を返します。
+
+主な項目:
+
+- `dateFrom`
+- `dateTo`
+- `requestNextItemKey`
+- `requestTransferStatuses`
+- `requestTransferClass`
+- `requestTransferTerm`
+- `hasNext`
+- `nextItemKey`
+
+重要ポイント:
+
+- リクエスト条件をレスポンスが持ち返すので、後続ページ取得や監査に便利
+- 監査ログを作るなら、実際に投げた条件とこのレスポンスを突合できる
+
+## 31.2 `requestNextItemKey` と `nextItemKey`
+
+役割が違います。
+
+| 項目 | 意味 |
+| --- | --- |
+| `requestNextItemKey` | 今回のリクエストで受け取ったキー |
+| `nextItemKey` | 次のページ取得に使うキー |
+
+ページング実装では混同しない方がよいです。
+
+## 32. エラー構造をモデルで読む
+
+## 32.1 業務APIの `ErrorResponse`
+
+業務API側の `ErrorResponse` は最小構造です。
+
+- `errorCode`
+- `errorMessage`
+
+つまり、HTTPステータスとこの2項目で大枠を判断します。
+
+## 32.2 振込系の `TransferError`
+
+振込系はより豊富です。
+
+- `errorCode`
+- `errorMessage`
+- `errorDetails`
+- `transferErrorDetails`
+
+ここが重要で、振込系は「全体エラー」と「明細単位エラー」の二層構造を持ちます。
+
+## 32.3 `ErrorDetail`
+
+`ErrorDetail` は:
+
+- `errorDetailsCode`
+- `errorDetailsMessage`
+
+を持ちます。
+
+実装では:
+
+- UI向け表示文
+- ログ向けコード
+
+を分けて保存すると後で分析しやすいです。
+
+## 32.4 `TransferErrorDetail`
+
+`TransferErrorDetail` は:
+
+- `itemId`
+- `errorDetails`
+
+を持ちます。
+
+つまり、総合振込や複数件振込では、どの明細が落ちたのかを `itemId` ベースで突き止められます。
+
+MCPで返すなら、最低限次を整形して返すと人間が理解しやすいです。
+
+- エラー全体コード
+- エラー全体メッセージ
+- 失敗明細番号一覧
+- 明細ごとの詳細コードと詳細文
+
+## 32.5 Webhookの `ErrorResponse`
+
+Webhookも基本形は同じで:
+
+- `errorCode`
+- `errorMessage`
+
+です。  
+Webhookのトラブルシュートでは、認証情報の誤りと配信状態の解釈ミスをまず疑うのが実務的です。
+
+## 33. Webhookメッセージをモデルで読む
+
+## 33.1 Webhook `Account`
+
+Webhook用 `Account` モデルは、通常の口座一覧APIの `Account` とは別です。
+
+持っているのは主に入金先口座情報です。
+
+- `raId`
+- `raBranchCode`
+- `raBranchNameKana`
+- `raAccountNumber`
+- `raHolderName`
+- `baseDate`
+- `baseTime`
+
+つまり、Webhook通知は「どの入金先口座に入ったか」を表す最小セットを返しています。
+
+## 33.2 `VaDepositTransactionMessage`
+
+主要項目:
+
+- `messageId`
+- `timestamp`
+- `account`
+- `vaTransaction`
+
+実装ポイント:
+
+- 受信時刻より `timestamp` を優先して業務イベント時刻を記録
+- `messageId` で完全重複排除
+- `account.raId` と `vaTransaction.vaId` の両軸で検索できるように保管
+
+## 34. 実装判断の原則まとめ
+
+最後に、仕様理解からコードに落とすときの判断原則を一行ずつまとめます。
+
+- 参照の主キーは基本的に `accountId`, `applyNo`, `vaId`, `messageId`
+- 書き込み系は結果照会APIとセットで設計する
+- ページングは「同条件継続」が原則
+- 空データ時の `200` と `404` を混同しない
+- 総合振込は単票振込の大量版ではなく独立面として扱う
+- 仮想口座は「発行」「一覧」「状態変更」「入金明細」を別責務に分ける
+- Webhookは通知受信だけでなく未送信回収まで含めて完成
+- 公開リポジトリやログには実口座情報・実クレデンシャルを絶対に出さない
