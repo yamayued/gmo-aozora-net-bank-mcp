@@ -2324,3 +2324,170 @@ Webhook用 `Account` モデルは、通常の口座一覧APIの `Account` とは
 - STG検証観点を自動テストケースへ落とし込んだ章
 
 この段階では、単なる調査メモではなく「公式資料を横断した設計ベース」として十分使える密度になっています。
+
+## 41. つかいわけ口座間振替 API
+
+これまでの章では `spAccounts` と残高モデルは触れていましたが、`つかいわけ口座間振替` 自体は独立章にしていませんでした。  
+公式Java SDKのソースと personal docs から確認できる、見落としやすい更新系APIです。
+
+## 41.1 エンドポイント
+
+| メソッド | パス | 内容 |
+| --- | --- | --- |
+| `POST` | `/transfer/spaccounts-transfer` | つかいわけ口座間振替 |
+
+少なくとも公式Java SDKの `personal.TransferApi` と `corporate.TransferApi` のソース上に存在します。
+
+## 41.2 機能概要
+
+公式SDKソースの説明:
+
+- 円普通預金
+- 証券コネクト口座
+- つかいわけ口座
+
+の間で振替を実行します。  
+振替は即時で、つかいわけ口座間の明細移動はこのAPIの対象外です。
+
+重要なのは、これは「他行振込」ではなく「内部振替」に近い責務だということです。
+
+## 41.3 `SpAccountTransferRequest`
+
+主な項目:
+
+- `depositSpAccountId`
+- `debitSpAccountId`
+- `currencyCode`
+- `paymentAmount`
+
+仕様上のポイント:
+
+- `depositSpAccountId`: 入金先つかいわけ口座ID
+- `debitSpAccountId`: 出金元つかいわけ口座ID
+- `currencyCode`: 省略時は `JPY`
+- `paymentAmount`: 数値のみ、カンマ不可、マイナス不可、1以上
+
+公開安全な JSON ひな型:
+
+```json
+{
+  "depositSpAccountId": "SP_ACCOUNT_ID_DEPOSIT_EXAMPLE",
+  "debitSpAccountId": "SP_ACCOUNT_ID_DEBIT_EXAMPLE",
+  "currencyCode": "JPY",
+  "paymentAmount": "100000"
+}
+```
+
+## 41.4 `SpAccountTransferResponse`
+
+主な項目:
+
+- `acceptDatetime`
+- `depositSpAccountId`
+- `debitSpAccountId`
+- `currencyCode`
+- `currencyName`
+- `paymentAmount`
+
+読み方:
+
+- 他の振込APIのような `applyNo` ベースではなく、受付日時を返す即時更新系に近い
+- 内部振替系なので、結果追跡より「更新が受理されたか」を重視する設計になる
+
+## 41.5 実装上の位置づけ
+
+このAPIは次の用途で有効です。
+
+- つかいわけ口座の資金移動
+- 資金プールから用途別口座への即時配賦
+- 証券コネクト口座との内部資金移動
+
+MCPツールとしては次のような切り方が自然です。
+
+- `transfer_between_sp_accounts`
+- `preview_sp_account_transfer`
+
+ここでも書き込み系なので、確認付きにするのが安全です。
+
+## 41.6 通常振込との違い
+
+| 観点 | つかいわけ口座間振替 | 通常振込 |
+| --- | --- | --- |
+| パス | `/transfer/spaccounts-transfer` | `/transfer/request` |
+| 即時性 | 即時実行 | 申請・受付・履歴追跡あり |
+| 主キー | `depositSpAccountId`, `debitSpAccountId` | `accountId`, `applyNo` |
+| 手数料見積 | 公式資料上は独立API未確認 | `transferfee` あり |
+| 追跡モデル | `acceptDatetime` 中心 | `applyNo`, `transferStatus` 中心 |
+
+つまり、通常振込フローに無理に押し込めず、別ユースケースとして扱うのが自然です。
+
+## 42. 公式SDK由来の命名ゆれ・実装注意
+
+この章は API 機能そのものではなく、「公式ソースをそのまま使うとどこでつまずくか」のまとめです。  
+既存章の URL 差異より一歩踏み込んで、モデル名やドキュメント差分を扱います。
+
+## 42.1 docs に出ないが source にある API がある
+
+今回確認できた代表例が `spAccountTransferUsingPOST` です。
+
+- personal docs には出ている
+- corporate docs には見つけにくい
+- ただし corporate source には実装がある
+
+このため、仕様確認は docs だけでなく source も見る価値があります。
+
+## 42.2 綴りゆれ・typo がある
+
+例:
+
+- `paymantBankName`
+- `paymantBranchName`
+- `transferDesignnatedType`
+
+これらは typo っぽく見えても、生成クライアントでは正式フィールド名として出てきます。  
+ラッパー層を作るなら内部では正規化名に変換してもよいですが、外部JSONとのマッピングは壊さないよう注意が必要です。
+
+## 42.3 Webhook の `webhook` / `webhooks`
+
+既出の URL 差異に加えて、ソースや docs によって:
+
+- `/api/webhook/v1`
+- `/api/webhooks/v1`
+
+の揺れがあります。  
+設定層で吸収し、実装本体に直書きしない方が安全です。
+
+## 42.4 generated docs の `No authorization required`
+
+これは SDK生成物の表現であって、業務的な意味で「認証不要」ではありません。  
+必須パラメータとして `xAccessToken` が存在するAPIは、実装上は認証必須です。
+
+## 42.5 項目説明と実際の利用責務がズレることがある
+
+たとえば:
+
+- 参考値で処理に使わない項目
+- 該当時のみ返す optional 項目
+- 省略時デフォルト値がある項目
+
+が混在しています。  
+そのため、「フィールドがあるから必須」「文字列だから自由入力」とは考えず、説明文まで読んで型を決めるべきです。
+
+## 42.6 内部ラッパーを作るなら正規化テーブルを持つ
+
+おすすめは、公式フィールド名と内部フィールド名の対応表を持つことです。
+
+例:
+
+| 公式名 | 内部正規化名 |
+| --- | --- |
+| `paymantBankName` | `paymentBankName` |
+| `paymantBranchName` | `paymentBranchName` |
+| `transferDesignnatedType` | `transferDesignatedType` |
+
+これにより、
+
+- 外部API互換
+- 内部コード可読性
+
+の両立がしやすくなります。
