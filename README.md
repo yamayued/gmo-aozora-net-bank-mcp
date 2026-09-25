@@ -50,3 +50,9 @@ GMO_AOZORA_CERT_PASSWORD=CERT_PASSWORD_EXAMPLE
 
 - [GMO Aozora API Extreme Reference](./docs/gmo-aozora-api-extreme-reference.md)
 - [AI Security And Operations Guide](./docs/ai-security-and-operations.md)
+
+
+## Developer / 開発・運営元
+
+- 開発・運営: [株式会社こころび（Cocorobi Inc.）公式サイト](https://cocorobi.co.jp)
+- 提供ソリューション: 紹介AIエージェント、法人データ連携・営業DX支援
